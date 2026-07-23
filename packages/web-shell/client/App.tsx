@@ -71,10 +71,7 @@ import {
   type ModelDialogMode,
 } from './components/dialogs/ModelDialog';
 import { ModelFallbacksDialog } from './components/dialogs/ModelFallbacksDialog';
-import {
-  AgentsMessage,
-  type AgentsInitialMode,
-} from './components/messages/AgentsMessage';
+import { AgentsManagerPage } from './components/agents/AgentsManagerPage';
 import { MemoryMessage } from './components/messages/MemoryMessage';
 import { AuthMessage } from './components/messages/AuthMessage';
 import { ToolsDialog } from './components/dialogs/ToolsDialog';
@@ -134,6 +131,7 @@ import { RewindDialog } from './components/dialogs/RewindDialog';
 import { AddWorkspaceDialog } from './components/dialogs/AddWorkspaceDialog';
 import { Button } from './components/ui/button';
 import {
+  isPluginShadowPanel,
   installWebShellShadowStyles,
   resolveWebShellShadowDom,
   type WebShellShadowDom,
@@ -195,7 +193,6 @@ import {
   TasksStatusMessage,
   type SerializedTasksMessage,
 } from './components/messages/TasksStatusMessage';
-import { isBackgroundSubAgentToolCall } from './adapters/toolClassification';
 import { serializeContextUsageMessage } from './components/messages/ContextUsageMessage';
 import {
   serializeStatsMessage,
@@ -946,15 +943,14 @@ function isBackgroundShellToolCall(tool: ACPToolCall): boolean {
   );
 }
 
-function getBackgroundTaskActivityKey(messages: readonly Message[]): string {
+export function getBackgroundTaskActivityKey(
+  messages: readonly Message[],
+): string {
   const parts: string[] = [];
   for (const message of messages) {
     if (message.role !== 'tool_group') continue;
     for (const tool of message.tools) {
-      if (
-        isBackgroundSubAgentToolCall(tool) ||
-        isBackgroundShellToolCall(tool)
-      ) {
+      if (isBackgroundShellToolCall(tool)) {
         parts.push(`${tool.callId}:${tool.status}`);
       }
     }
@@ -2320,12 +2316,9 @@ export function App({
     () => getBackgroundTaskActivityKey(messages),
     [messages],
   );
-  const [backgroundTasksRefreshTrigger, setBackgroundTasksRefreshTrigger] =
-    useState(0);
   const backgroundTasks = useBackgroundTasks(
     backgroundTaskActivityKey,
     connection.status === 'connected',
-    backgroundTasksRefreshTrigger,
   );
   const footerTasks = useMemo(
     () => (renderFooter ? backgroundTasks.map(mapToWebShellTaskInfo) : []),
@@ -2504,6 +2497,7 @@ export function App({
     | 'mcp'
     | 'skills'
     | 'plugins'
+    | 'agents'
     | null
   >(null);
   const closePanel = useCallback(() => setActivePanel(null), []);
@@ -2532,7 +2526,8 @@ export function App({
         | 'extensions'
         | 'mcp'
         | 'skills'
-        | 'plugins',
+        | 'plugins'
+        | 'agents',
     ) => {
       setMainView('chat');
       setActivePanel(panel);
@@ -2935,8 +2930,9 @@ export function App({
   const [memoryAddScope, setMemoryAddScope] = useState<'workspace' | 'global'>(
     'workspace',
   );
-  const [agentsDialogMode, setAgentsDialogMode] =
-    useState<AgentsInitialMode | null>(null);
+  const [agentsCreateScope, setAgentsCreateScope] = useState<
+    'workspace' | 'global' | null
+  >(null);
   const [escapeHintVisible, setEscapeHintVisible] = useState(false);
   // Whether the first Esc has armed a stream cancellation; the composer's send
   // button shows an "Esc again to stop" affordance while true.
@@ -3233,7 +3229,6 @@ export function App({
     showApprovalModeDialog ||
     tasksDialogMessage !== null ||
     mcpDialogMessage !== null ||
-    agentsDialogMode !== null ||
     showMemoryDialog ||
     showAuthDialog ||
     showAddWorkspaceDialog ||
@@ -5163,7 +5158,6 @@ export function App({
                   pushToast('warning', t('fork.notStarted'));
                   return;
                 }
-                setBackgroundTasksRefreshTrigger((value) => value + 1);
                 pushToast(
                   'success',
                   t('fork.started', { name: result.description }),
@@ -5420,23 +5414,22 @@ export function App({
           }
           if (cmd === 'agents') {
             const subCommand = text.slice(match[0].length).trim().toLowerCase();
-            let agentsMode: AgentsInitialMode = 'menu';
             if (subCommand === 'create') {
-              agentsMode = 'create';
+              setAgentsCreateScope('global');
             } else if (
               subCommand === 'create user' ||
               subCommand === 'create global'
             ) {
-              agentsMode = 'create-user';
+              setAgentsCreateScope('global');
             } else if (
               subCommand === 'create project' ||
               subCommand === 'create workspace'
             ) {
-              agentsMode = 'create-project';
-            } else if (subCommand === 'manage') {
-              agentsMode = 'manage';
+              setAgentsCreateScope('workspace');
+            } else {
+              setAgentsCreateScope(null);
             }
-            setAgentsDialogMode(agentsMode);
+            openPanel('agents');
             return true;
           }
           if (cmd === 'extensions') {
@@ -6778,26 +6771,6 @@ export function App({
               />
             </DialogShell>
           )}
-          {agentsDialogMode && (
-            <DialogShell
-              title={
-                agentsDialogMode === 'manage'
-                  ? t('agent.manage')
-                  : agentsDialogMode === 'menu'
-                    ? t('agents.title')
-                    : t('agent.create')
-              }
-              size="lg"
-              onClose={() => setAgentsDialogMode(null)}
-            >
-              <AgentsMessage
-                mode={agentsDialogMode}
-                embedded
-                onMessage={(text) => store.dispatch([{ type: 'status', text }])}
-                onClose={() => setAgentsDialogMode(null)}
-              />
-            </DialogShell>
-          )}
           {showMemoryDialog && (
             <DialogShell
               title={t('memory.menu')}
@@ -7155,6 +7128,8 @@ export function App({
                           ? t('mcp.title')
                           : activePanel === 'skills'
                             ? t('skills.title')
+                          : activePanel === 'agents'
+                              ? t('agents.title')
                           : activePanel === 'plugins'
                               ? t('plugins.title')
                               : t('sessionsOverview.title')
@@ -7163,6 +7138,7 @@ export function App({
                   {activePanel !== 'extensions' &&
                     activePanel !== 'mcp' &&
                     activePanel !== 'skills' &&
+                    activePanel !== 'agents' &&
                     activePanel !== 'plugins' && (
                     <div className={styles.panelHeader}>
                     <button
@@ -7195,7 +7171,32 @@ export function App({
                     </div>
                   )}
                   <div className={styles.panelBody} key={activePanel}>
-                    {activePanel === 'settings' ? (
+                    <ShadowDomBoundary
+                      enabled={
+                        shadowDomOptions.plugins &&
+                        isPluginShadowPanel(activePanel)
+                      }
+                      language={selectedLanguage}
+                      themeClassName={[
+                        selectedTheme === WebShellThemeId.Light
+                          ? styles.themeLight
+                          : styles.themeDark,
+                        selectedTheme === WebShellThemeId.Dark
+                          ? 'dark'
+                          : undefined,
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      styles={shadowDomOptions.styles}
+                      initialFocusRef={
+                        activePanel === 'plugins'
+                          ? pluginTabRef
+                          : activePanel === 'extensions'
+                            ? panelHeadingRef
+                            : undefined
+                      }
+                    >
+                      {activePanel === 'settings' ? (
                       <SettingsMessage
                         settingsState={workspaceSettingsState}
                         embedded
@@ -7282,38 +7283,29 @@ export function App({
                         onClose={closePanel}
                         onUseSkill={handleUseSkill}
                       />
+                    ) : activePanel === 'agents' ? (
+                      <AgentsManagerPage
+                        onClose={() => {
+                          setAgentsCreateScope(null);
+                          closePanel();
+                        }}
+                        initialCreateScope={agentsCreateScope}
+                      />
                     ) : activePanel === 'plugins' ? (
-                      <ShadowDomBoundary
-                        enabled={shadowDomOptions.plugins}
-                        language={selectedLanguage}
-                        themeClassName={[
-                          selectedTheme === WebShellThemeId.Light
-                            ? styles.themeLight
-                            : styles.themeDark,
-                          selectedTheme === WebShellThemeId.Dark
-                            ? 'dark'
-                            : undefined,
-                        ]
-                          .filter(Boolean)
-                          .join(' ')}
-                        styles={shadowDomOptions.styles}
+                      <PluginManagerPage
+                        mcpMessage={mcpDialogMessage}
+                        loadMcpMessage={async () => {
+                          try {
+                            await loadMcpManagerMessage();
+                          } catch (error) {
+                            reportError(error, 'Failed to load MCP status');
+                            throw error;
+                          }
+                        }}
+                        onClose={closePanel}
+                        onUseSkill={handleUseSkill}
                         initialFocusRef={pluginTabRef}
-                      >
-                        <PluginManagerPage
-                          mcpMessage={mcpDialogMessage}
-                          loadMcpMessage={async () => {
-                            try {
-                              await loadMcpManagerMessage();
-                            } catch (error) {
-                              reportError(error, 'Failed to load MCP status');
-                              throw error;
-                            }
-                          }}
-                          onClose={closePanel}
-                          onUseSkill={handleUseSkill}
-                          initialFocusRef={pluginTabRef}
-                        />
-                      </ShadowDomBoundary>
+                      />
                     ) : (
                       <SessionOverviewPanel
                         onOpenSession={handleOpenSessionFromOverview}
@@ -7322,6 +7314,7 @@ export function App({
                         workspaceCwd={lockedWorkspaceCwd}
                       />
                     )}
+                    </ShadowDomBoundary>
                   </div>
                 </section>
               )}
@@ -8136,7 +8129,14 @@ export function App({
                 </DrawerContent>
               </Drawer>
             ) : artifactPanelOpen ? (
-              <>
+              <div
+                className={styles.artifactPanelDock}
+                style={
+                  {
+                    '--artifact-panel-dock-width': `${artifactPanelWidth + 4}px`,
+                  } as CSSProperties
+                }
+              >
                 <div
                   className={styles.artifactResizeHandle}
                   role="separator"
@@ -8146,22 +8146,24 @@ export function App({
                   aria-valuenow={artifactPanelWidth}
                   onPointerDown={handleArtifactPanelResizeStart}
                 />
-                <ArtifactPanel
-                  artifacts={artifactPanelArtifacts}
-                  tabs={artifactPanelTabs}
-                  activeTabId={activeArtifactPanelTabId}
-                  reviewChanges={reviewChanges}
-                  selectedReviewPath={selectedReviewPath}
-                  panelWidth={artifactPanelWidth}
-                  workspaceCwd={connection.workspaceCwd || ''}
-                  loading={artifactsLoading}
-                  error={artifactsError}
-                  onSelectTab={setActiveArtifactPanelTabId}
-                  onCloseTab={closeArtifactPanelTab}
-                  onOpenFilePreview={openFilePreview}
-                  onClose={closeArtifactPanel}
-                />
-              </>
+                <div className={styles.artifactPanelClip}>
+                  <ArtifactPanel
+                    artifacts={artifactPanelArtifacts}
+                    tabs={artifactPanelTabs}
+                    activeTabId={activeArtifactPanelTabId}
+                    reviewChanges={reviewChanges}
+                    selectedReviewPath={selectedReviewPath}
+                    panelWidth={artifactPanelWidth}
+                    workspaceCwd={connection.workspaceCwd || ''}
+                    loading={artifactsLoading}
+                    error={artifactsError}
+                    onSelectTab={setActiveArtifactPanelTabId}
+                    onCloseTab={closeArtifactPanelTab}
+                    onOpenFilePreview={openFilePreview}
+                    onClose={closeArtifactPanel}
+                  />
+                </div>
+              </div>
             ) : null}
           </div>
         </div>

@@ -4,6 +4,7 @@ import { act, createRef, type CSSProperties } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { DaemonInputAnnotation } from '@qwen-code/sdk/daemon';
 import type { WebShellApi } from './App';
+import type { Message } from './adapters/types';
 import { loadSplitSessions, saveSplitSessions } from './utils/splitUrl';
 
 type StreamingState = 'idle' | 'responding';
@@ -823,7 +824,7 @@ mockComponent(
   'ReleaseSessionDialog',
 );
 mockComponent('./components/dialogs/RewindDialog', 'RewindDialog');
-mockComponent('./components/messages/AgentsMessage', 'AgentsMessage');
+mockComponent('./components/agents/AgentsManagerPage', 'AgentsManagerPage');
 mockComponent('./components/messages/MemoryMessage', 'MemoryMessage');
 mockComponent('./components/messages/AuthMessage', 'AuthMessage');
 // Record keyboardActive so app-level tests can assert the overlay is told to
@@ -854,13 +855,42 @@ mockComponent('./components/messages/TasksStatusMessage', 'TasksStatusMessage');
 mockComponent('./components/messages/BtwMessage', 'BtwMessage');
 mockComponent('./components/QueuedPromptDisplay', 'QueuedPromptDisplay');
 
-const { App } = await import('./App');
+const { App, getBackgroundTaskActivityKey } = await import('./App');
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mounted: Array<{ root: Root; container: HTMLElement }> = [];
+
+describe('background task activity key', () => {
+  it('includes background shells and excludes background agents', () => {
+    const messages = [
+      {
+        id: 'tools',
+        role: 'tool_group',
+        tools: [
+          {
+            callId: 'shell-call',
+            toolName: 'shell',
+            status: 'in_progress',
+            args: { is_background: true },
+          },
+          {
+            callId: 'agent-call',
+            toolName: 'agent',
+            status: 'pending',
+            args: { run_in_background: true },
+          },
+        ],
+      },
+    ] satisfies Message[];
+
+    expect(getBackgroundTaskActivityKey(messages)).toBe(
+      'shell-call:in_progress',
+    );
+  });
+});
 
 function renderApp(props: React.ComponentProps<typeof App> = {}): {
   container: HTMLElement;
@@ -3466,6 +3496,7 @@ describe('App session callbacks', () => {
       'Extensions',
       'MCP',
       'Skills',
+      'Agents',
     ]);
     expect(extensionsTab?.getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(extensionsTab);
@@ -3482,7 +3513,7 @@ describe('App session callbacks', () => {
     ).toBe('true');
   });
 
-  it('shadow-isolates only the plugin manager body when plugins is enabled', async () => {
+  it('shadow-isolates the unified plugin manager body when plugins is enabled', async () => {
     const { container } = renderApp({
       shadowDom: {
         plugins: true,
@@ -3515,6 +3546,45 @@ describe('App session callbacks', () => {
       document.querySelector('[data-web-shell-portal-root]'),
     ).not.toBeNull();
   });
+
+  it.each([
+    ['/extensions manage', 'Manage Extensions'],
+    ['/mcp', 'MCP Servers'],
+    ['/skills details', 'Skills'],
+  ])(
+    'shadow-isolates the %s compatibility page when plugins is enabled',
+    async (command, panelLabel) => {
+      mockWorkspaceActions.loadMcpStatus.mockResolvedValue({
+        initialized: true,
+        discoveryState: 'completed',
+        servers: [],
+      });
+      const { container } = renderApp({
+        shadowDom: {
+          plugins: true,
+          portals: false,
+        },
+      });
+      await flush();
+
+      testState.prompt = command;
+      await clickSubmit(container);
+      await flush();
+
+      const panel = container.querySelector('[data-testid="inline-panel"]');
+      const host = panel?.querySelector<HTMLElement>(
+        '[data-web-shell-shadow-host="plugins"]',
+      );
+      expect(panel?.getAttribute('aria-label')).toBe(panelLabel);
+      expect(host?.shadowRoot).not.toBeNull();
+      expect(
+        host?.shadowRoot?.querySelector(
+          '[data-web-shell-shadow-root="plugins"]',
+        ),
+      ).not.toBeNull();
+      expect(panel?.querySelector('button')).toBeNull();
+    },
+  );
 
   it('uses one shadow root for all portals without moving plugin content', async () => {
     const { container } = renderApp({
